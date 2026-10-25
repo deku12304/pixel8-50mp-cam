@@ -1,131 +1,167 @@
 package com.pixel8.ultra50mp
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Bundle
 import android.view.Surface
 import android.view.TextureView
-import android.view.View
+import android.widget.ImageButton
+import android.widget.TextView
 import android.widget.Toast
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.ToggleButton
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.lifecycleScope
-import com.pixel8.ultra50mp.databinding.ActivityMainBinding
-import kotlinx.coroutines.launch
 
-class MainActivity : AppCompatActivity() {
+class MainActivity : AppCompatActivity(), SensorEventListener {
 
-    private lateinit var binding: ActivityMainBinding
+    private lateinit var viewFinder: AutoFitTextureView
+    private lateinit var cameraOverlay: CameraOverlayView
+    private lateinit var tvStatusBadge: TextView
+    private lateinit var btnGridToggle: ToggleButton
+    private lateinit var btnHdrToggle: ToggleButton
+    private lateinit var btnCapture: ImageButton
+    private lateinit var btnPreviewThumbnail: ImageButton
+
     private lateinit var cameraEngine: Pixel8CameraEngine
+    private lateinit var sensorManager: SensorManager
+    private var rotationSensor: Sensor? = null
 
-    private val permissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            if (binding.viewfinder.isAvailable) {
-                startCamera(binding.viewfinder.surfaceTexture!!)
-            }
-        } else {
-            Toast.makeText(this, "Camera permission is required for 50MP capture", Toast.LENGTH_LONG).show()
-        }
-    }
+    private var lastSavedPhotoUri: Uri? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
+        setContentView(R.layout.activity_main)
 
-        cameraEngine = Pixel8CameraEngine(this)
+        viewFinder = findViewById(R.id.viewFinder)
+        cameraOverlay = findViewById(R.id.cameraOverlay)
+        tvStatusBadge = findViewById(R.id.tvStatusBadge)
+        btnGridToggle = findViewById(R.id.btnGridToggle)
+        btnHdrToggle = findViewById(R.id.btnHdrToggle)
+        btnCapture = findViewById(R.id.btnCapture)
+        btnPreviewThumbnail = findViewById(R.id.btnPreviewThumbnail)
 
-        // Set 4:3 aspect ratio matching the Pixel 8 50MP sensor (8160 x 6144)
-        binding.viewfinder.setAspectRatio(3, 4)
+        // Setup Gyro/Rotation Vector Sensor for Level Indicator
+        sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
+        rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
-        binding.viewfinder.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
-            override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-                checkPermissionAndStart(texture)
+        cameraEngine = Pixel8CameraEngine(
+            context = this,
+            onStatusChanged = { statusText ->
+                runOnUiThread { tvStatusBadge.text = statusText }
+            },
+            onPhotoSaved = { savedUri ->
+                lastSavedPhotoUri = savedUri
+                runOnUiThread {
+                    btnPreviewThumbnail.setImageURI(savedUri)
+                }
             }
+        )
 
+        btnGridToggle.setOnCheckedChangeListener { _, isChecked ->
+            cameraOverlay.showGrid = isChecked
+        }
+
+        btnCapture.setOnClickListener {
+            cameraEngine.capturePhoto(enableHdr = btnHdrToggle.isChecked)
+        }
+
+        btnPreviewThumbnail.setOnClickListener {
+            openInGooglePhotos(lastSavedPhotoUri)
+        }
+
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+            setupViewFinder()
+        } else {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1001)
+        }
+    }
+
+    private fun setupViewFinder() {
+        viewFinder.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
+                texture.setDefaultBufferSize(1920, 1440)
+                cameraEngine.startCamera(Surface(texture))
+            }
             override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
             override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean = true
             override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
         }
-
-        binding.btnShutter.setOnClickListener {
-            trigger50MpCapture()
-        }
     }
 
-    private fun checkPermissionAndStart(texture: SurfaceTexture) {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) ==
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            startCamera(texture)
-        } else {
-            permissionLauncher.launch(Manifest.permission.CAMERA)
+    private fun openInGooglePhotos(photoUri: Uri?) {
+        if (photoUri == null) {
+            Toast.makeText(this, "Capture a 50MP photo first!", Toast.LENGTH_SHORT).show()
+            return
         }
-    }
 
-    private fun startCamera(texture: SurfaceTexture) {
-        // Configure preview buffer at 4:3 (1920x1440)
-        texture.setDefaultBufferSize(1920, 1440)
-        val previewSurface = Surface(texture)
+        val photosIntent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(photoUri, "image/jpeg")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            setPackage("com.google.android.apps.photos")
+        }
 
-        cameraEngine.openCamera(
-            previewSurface = previewSurface,
-            onReady = { info ->
-                runOnUiThread {
-                    val modeLabel = if (info.native50MpUnlocked) {
-                        "ISOCELL GNV • Native 50.1 MP HAL Mode"
-                    } else {
-                        "ISOCELL GNV • Unrooted 50.1 MP Super-Res Mode"
-                    }
-                    binding.tvSensorStatus.text = modeLabel
-                    binding.tvResolutionSub.text =
-                        "Sensor Readout: ${info.sensorCaptureSize.width}×${info.sensorCaptureSize.height} → Output: 8160×6144 (50.1 MP)"
-                }
-            },
-            onError = { err ->
-                runOnUiThread {
-                    Toast.makeText(this, err, Toast.LENGTH_LONG).show()
-                }
+        try {
+            startActivity(photosIntent)
+        } catch (e: Exception) {
+            val fallbackIntent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(photoUri, "image/jpeg")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-        )
+            startActivity(fallbackIntent)
+        }
     }
 
-    private fun trigger50MpCapture() {
-        binding.btnShutter.isEnabled = false
-        binding.processingOverlay.visibility = View.VISIBLE
-
-        val burstCount = if (binding.switchEightFrame.isChecked) 8 else 4
-        val saveDng = binding.switchSaveDng.isChecked
-
-        lifecycleScope.launch {
-            try {
-                val summary = cameraEngine.capture50MpPhoto(
-                    burstCount = burstCount,
-                    saveRawDng = saveDng,
-                    onStepUpdate = { stepText ->
-                        runOnUiThread {
-                            binding.tvProcessingStep.text = stepText
-                        }
-                    }
-                )
-                binding.tvLastSaved.text = summary
-                Toast.makeText(this@MainActivity, summary, Toast.LENGTH_SHORT).show()
-            } catch (e: Exception) {
-                binding.tvLastSaved.text = "Error: ${e.localizedMessage}"
-                Toast.makeText(this@MainActivity, "Capture failed: ${e.message}", Toast.LENGTH_LONG).show()
-            } finally {
-                binding.processingOverlay.visibility = View.GONE
-                binding.btnShutter.isEnabled = true
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1001 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            if (viewFinder.isAvailable) {
+                cameraEngine.startCamera(Surface(viewFinder.surfaceTexture))
+            } else {
+                setupViewFinder()
             }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        rotationSensor?.let {
+            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        sensorManager.unregisterListener(this)
+    }
+
+    override fun onSensorChanged(event: SensorEvent?) {
+        if (event?.sensor?.type == Sensor.TYPE_ROTATION_VECTOR) {
+            val rotationMatrix = FloatArray(9)
+            SensorManager.getRotationMatrixFromVector(rotationMatrix, event.values)
+            val orientationAngles = FloatArray(3)
+            SensorManager.getOrientation(rotationMatrix, orientationAngles)
+
+            val rollDegrees = Math.toDegrees(orientationAngles[2].toDouble()).toFloat()
+            cameraOverlay.rollAngle = rollDegrees
+        }
+    }
+
+    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onDestroy() {
         super.onDestroy()
-        cameraEngine.close()
+        cameraEngine.release()
     }
 }
