@@ -4,27 +4,29 @@
     android:layout_height="match_parent"
     android:background="#000000">
 
-    <!-- Existing AutoFitTextureView -->
+    <!-- 3:4 Camera Viewfinder -->
     <com.pixel8.ultra50mp.AutoFitTextureView
         android:id="@+id/viewFinder"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:layout_gravity="center" />
 
-    <!-- New Grid & Horizon Level Overlay -->
+    <!-- Dedicated Autofocus Crosshair, Horizon Level & Grid Overlay -->
     <com.pixel8.ultra50mp.CameraOverlayView
         android:id="@+id/cameraOverlay"
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Top Bar: Status Badge, Grid Toggle, and Natural HDR Toggle -->
+    <!-- Top Pro HUD Bar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
+        android:background="#55000000"
         android:gravity="center_vertical"
         android:orientation="horizontal"
-        android:padding="16dp">
+        android:paddingHorizontal="14dp"
+        android:paddingVertical="12dp">
 
         <TextView
             android:id="@+id/tvStatusBadge"
@@ -34,15 +36,15 @@
             android:background="@drawable/badge_bg"
             android:paddingHorizontal="12dp"
             android:paddingVertical="6dp"
-            android:text="50MP • NATURAL"
-            android:textColor="#FFFFFF"
+            android:text="50MP PRO • 1.0x READY"
+            android:textColor="#00E676"
             android:textSize="12sp"
             android:textStyle="bold" />
 
         <ToggleButton
             android:id="@+id/btnGridToggle"
             android:layout_width="wrap_content"
-            android:layout_height="38dp"
+            android:layout_height="36dp"
             android:layout_marginStart="8dp"
             android:background="@drawable/badge_bg"
             android:checked="true"
@@ -50,12 +52,12 @@
             android:textColor="#FFFFFF"
             android:textOff="GRID OFF"
             android:textOn="GRID ON"
-            android:textSize="12sp" />
+            android:textSize="11sp" />
 
         <ToggleButton
             android:id="@+id/btnHdrToggle"
             android:layout_width="wrap_content"
-            android:layout_height="38dp"
+            android:layout_height="36dp"
             android:layout_marginStart="8dp"
             android:background="@drawable/badge_bg"
             android:checked="true"
@@ -63,37 +65,124 @@
             android:textColor="#FFFFFF"
             android:textOff="HDR OFF"
             android:textOn="HDR ON"
-            android:textSize="12sp" />
+            android:textSize="11sp" />
 
     </LinearLayout>
 
-    <!-- Bottom Bar: Shutter Button & Google Photos Thumbnail Preview -->
-    <RelativeLayout
+    <!-- Bottom Pro Camera Controls + AI Zoom Bar -->
+    <LinearLayout
         android:layout_width="match_parent"
-        android:layout_height="140dp"
+        android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="#66000000"
-        android:paddingHorizontal="36dp">
+        android:background="#88000000"
+        android:gravity="center_horizontal"
+        android:orientation="vertical"
+        android:paddingTop="10dp"
+        android:paddingBottom="24dp">
 
-        <ImageButton
-            android:id="@+id/btnCapture"
-            android:layout_width="80dp"
-            android:layout_height="80dp"
-            android:layout_centerInParent="true"
-            android:background="@drawable/shutter_button_bg"
-            android:contentDescription="Shutter" />
+        <!-- Quick AI Zoom Preset Buttons (1x, 2x, 5x, 8x) -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center"
+            android:orientation="horizontal">
 
-        <ImageButton
-            android:id="@+id/btnPreviewThumbnail"
-            android:layout_width="56dp"
-            android:layout_height="56dp"
-            android:layout_alignParentEnd="true"
-            android:layout_centerVertical="true"
-            android:background="@drawable/badge_bg"
-            android:contentDescription="Open in Google Photos"
-            android:padding="2dp"
-            android:scaleType="centerCrop" />
+            <Button
+                android:id="@+id/btnZoom1x"
+                android:layout_width="52dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:background="@drawable/badge_bg"
+                android:text="1x"
+                android:textColor="#00E676"
+                android:textSize="12sp"
+                android:textStyle="bold" />
 
-    </RelativeLayout>
+            <Button
+                android:id="@+id/btnZoom2x"
+                android:layout_width="52dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:background="@drawable/badge_bg"
+                android:text="2x"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnZoom5x"
+                android:layout_width="52dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:background="@drawable/badge_bg"
+                android:text="5x"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btnZoom8x"
+                android:layout_width="52dp"
+                android:layout_height="36dp"
+                android:layout_marginHorizontal="4dp"
+                android:background="@drawable/badge_bg"
+                android:text="8x"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- Smooth AI Zoom Slider -->
+        <SeekBar
+            android:id="@+id/zoomSeekBar"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:layout_marginBottom="12dp"
+            android:max="70"
+            android:progress="0"
+            android:progressTint="#00E676"
+            android:thumbTint="#FFFFFF" />
+
+        <!-- Shutter Row: AF-C Reset (Left), 50MP Shutter (Center), Google Photos Preview (Right) -->
+        <RelativeLayout
+            android:layout_width="match_parent"
+            android:layout_height="90dp"
+            android:paddingHorizontal="32dp">
+
+            <Button
+                android:id="@+id/btnAfReset"
+                android:layout_width="64dp"
+                android:layout_height="44dp"
+                android:layout_alignParentStart="true"
+                android:layout_centerVertical="true"
+                android:background="@drawable/badge_bg"
+                android:text="AF-C"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <ImageButton
+                android:id="@+id/btnCapture"
+                android:layout_width="80dp"
+                android:layout_height="80dp"
+                android:layout_centerInParent="true"
+                android:background="@drawable/shutter_button_bg"
+                android:contentDescription="50MP Shutter" />
+
+            <ImageButton
+                android:id="@+id/btnPreviewThumbnail"
+                android:layout_width="58dp"
+                android:layout_height="58dp"
+                android:layout_alignParentEnd="true"
+                android:layout_centerVertical="true"
+                android:background="@drawable/badge_bg"
+                android:contentDescription="Open in Google Photos"
+                android:padding="2dp"
+                android:scaleType="centerCrop" />
+
+        </RelativeLayout>
+
+    </LinearLayout>
 
 </FrameLayout>
