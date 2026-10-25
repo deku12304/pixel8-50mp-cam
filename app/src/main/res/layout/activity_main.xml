@@ -1,143 +1,71 @@
 <?xml version="1.0" encoding="utf-8"?>
-<androidx.constraintlayout.widget.ConstraintLayout
-    xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/black">
+    android:background="#000000">
 
-    <!-- 4:3 Camera Viewfinder matching the Pixel 8 ISOCELL GNV native aspect ratio -->
-    <com.pixel8.ultra50mp.AutoFitTextureView
-        android:id="@+id/viewfinder"
-        android:layout_width="0dp"
-        android:layout_height="0dp"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toTopOf="@+id/bottomControls"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent" />
+    <!-- Camera Viewfinder -->
+    <TextureView
+        android:id="@+id/viewFinder"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
 
-    <!-- Top Sensor Status Badge -->
+    <!-- Grid & Horizon Level Overlay -->
+    <com.example.pixel8camera.CameraOverlayView
+        android:id="@+id/cameraOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- Top Bar: HDR & Grid Toggles -->
     <LinearLayout
-        android:id="@+id/topBar"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="28dp"
-        android:background="@drawable/badge_bg"
-        android:orientation="vertical"
-        android:paddingHorizontal="16dp"
-        android:paddingVertical="10dp"
-        android:gravity="center"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
-
-        <TextView
-            android:id="@+id/tvSensorStatus"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="@string/mode_badge_initial"
-            android:textColor="@color/pixel_Gold"
-            android:textSize="13sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/tvResolutionSub"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2dp"
-            android:text="Target Output: 8160 × 6144 (50.1 MP) • Photo Only"
-            android:textColor="@color/white"
-            android:textSize="11sp" />
-    </LinearLayout>
-
-    <!-- Processing Overlay shown while merging burst frames into 50.1 MP -->
-    <LinearLayout
-        android:id="@+id/processingOverlay"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:background="@drawable/badge_bg"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:padding="24dp"
-        android:visibility="gone"
-        app:layout_constraintTop_toTopOf="parent"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
-
-        <ProgressBar
-            android:layout_width="48dp"
-            android:layout_height="48dp"
-            android:indeterminateTint="@color/pixel_blue" />
-
-        <TextView
-            android:id="@+id/tvProcessingStep"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:text="Capturing Multi-Frame Burst…"
-            android:textColor="@color/white"
-            android:textSize="14sp"
-            android:textStyle="bold" />
-    </LinearLayout>
-
-    <!-- Bottom Photo-Only Control Deck -->
-    <LinearLayout
-        android:id="@+id/bottomControls"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:background="#E60E0E0E"
-        android:gravity="center"
-        android:orientation="vertical"
-        android:paddingVertical="18dp"
-        app:layout_constraintBottom_toBottomOf="parent"
-        app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintEnd_toEndOf="parent">
+        android:layout_gravity="top"
+        android:gravity="end"
+        android:orientation="horizontal"
+        android:padding="20dp">
 
-        <!-- Toggles for 8-frame Super-Resolution and 16-bit DNG RAW output -->
-        <LinearLayout
+        <ToggleButton
+            android:id="@+id/btnHdrToggle"
             android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="14dp"
-            android:gravity="center_vertical"
-            android:orientation="horizontal">
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/switchEightFrame"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="8-Frame SR"
-                android:textColor="@color/white"
-                android:textSize="12sp"
-                android:layout_marginEnd="16dp" />
-
-            <com.google.android.material.switchmaterial.SwitchMaterial
-                android:id="@+id/switchSaveDng"
-                android:layout_width="wrap_content"
-                android:layout_height="wrap_content"
-                android:checked="true"
-                android:text="Save 16-bit DNG"
-                android:textColor="@color/white"
-                android:textSize="12sp" />
-        </LinearLayout>
-
-        <!-- Dedicated Photo Shutter Button (No Video Mode) -->
-        <ImageButton
-            android:id="@+id/btnShutter"
-            android:layout_width="78dp"
-            android:layout_height="78dp"
-            android:background="@drawable/shutter_button_bg"
-            android:contentDescription="@string/shutter_desc" />
-
-        <TextView
-            android:id="@+id/tvLastSaved"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="10dp"
-            android:text="Ready • Unrooted 50MP Pipeline"
-            android:textColor="#B3FFFFFF"
-            android:textSize="12sp" />
+            android:layout_height="40dp"
+            android:textOn="HDR ON"
+            android:textOff="HDR OFF"
+            android:textColor="#FFFFFF"
+            android:background="#66000000"
+            android:paddingHorizontal="12dp" />
     </LinearLayout>
 
-</androidx.constraintlayout.widget.ConstraintLayout>
+    <!-- Bottom Controls Bar: Shutter & Google Photos Preview -->
+    <RelativeLayout
+        android:layout_width="match_parent"
+        android:layout_height="140dp"
+        android:layout_gravity="bottom"
+        android:background="#4D000000"
+        android:paddingHorizontal="36dp">
+
+        <!-- 50MP Shutter Button (Centered) -->
+        <Button
+            android:id="@+id/btnCapture"
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:layout_centerInParent="true"
+            android:backgroundTint="#FFFFFF"
+            android:text="50MP"
+            android:textColor="#000000"
+            android:textStyle="bold" />
+
+        <!-- Thumbnail Preview (Right side, like Pixel Camera) -->
+        <ImageButton
+            android:id="@+id/btnPreviewThumbnail"
+            android:layout_width="56dp"
+            android:layout_height="56dp"
+            android:layout_alignParentEnd="true"
+            android:layout_centerVertical="true"
+            android:background="#33FFFFFF"
+            android:scaleType="centerCrop"
+            android:contentDescription="Open in Google Photos" />
+
+    </RelativeLayout>
+
+</FrameLayout>
