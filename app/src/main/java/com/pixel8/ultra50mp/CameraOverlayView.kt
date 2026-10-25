@@ -1,4 +1,4 @@
-package com.example.pixel8camera // Replace with your actual package name
+package com.pixel8.ultra50mp
 
 import android.content.Context
 import android.graphics.Canvas
@@ -27,7 +27,7 @@ class CameraOverlayView @JvmOverloads constructor(
         }
 
     private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#66FFFFFF") // Subtle translucent white
+        color = Color.parseColor("#55FFFFFF")
         strokeWidth = 2f
         style = Paint.Style.STROKE
     }
@@ -40,7 +40,7 @@ class CameraOverlayView @JvmOverloads constructor(
     }
 
     private val levelLockedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.parseColor("#4CAF50") // Turns green when level (within 1 degree)
+        color = Color.parseColor("#4CAF50") // Turns green when perfectly level
         strokeWidth = 6f
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
