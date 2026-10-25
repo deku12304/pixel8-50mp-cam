@@ -8,7 +8,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
-import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
 object SuperRes50MpProcessor {
@@ -18,64 +17,49 @@ object SuperRes50MpProcessor {
 
     data class ProcessedPhoto(val uri: Uri, val thumbnail: Bitmap)
 
-    class YuvData(val bytes: ByteArray, val width: Int, val height: Int)
-
-    fun extractYuvBytes(image: Image): YuvData {
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
-
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
-
-        val nv21 = ByteArray(ySize + uSize + vSize)
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        return YuvData(nv21, image.width, image.height)
+    fun extractBytes(image: Image): ByteArray {
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        return bytes
     }
 
-    fun processYuvSingle50Mp(context: Context, yuv: YuvData, width: Int, height: Int): ProcessedPhoto? {
-        val bitmap = yuvToBitmap(yuv.bytes, width, height) ?: return null
-        return upscaleAndSave50Mp(context, bitmap, "50MP")
+    fun processSingle50Mp(context: Context, jpegBytes: ByteArray): ProcessedPhoto? {
+        val opts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val sourceBmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts) ?: return null
+        return upscaleAndSave50Mp(context, sourceBmp, "50MP")
     }
 
-    fun processYuvHdr50Mp(context: Context, frames: List<YuvData>, width: Int, height: Int): ProcessedPhoto? {
+    fun processNaturalHdr50Mp(context: Context, frames: List<ByteArray>): ProcessedPhoto? {
         if (frames.isEmpty()) return null
-        if (frames.size < 3) return processYuvSingle50Mp(context, frames[0], width, height)
+        if (frames.size < 3) return processSingle50Mp(context, frames[0])
 
-        val baseBmp = yuvToBitmap(frames[0].bytes, width, height) ?: return null
+        val opts = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+            inMutable = true
+        }
+
+        val baseBmp = BitmapFactory.decodeByteArray(frames[0], 0, frames[0].size, opts)
+            ?: return processSingle50Mp(context, frames[0])
+
         val canvas = Canvas(baseBmp)
 
         // Blend bracket frames for natural HDR dynamic range
-        yuvToBitmap(frames[1].bytes, width, height)?.let { underBmp ->
+        BitmapFactory.decodeByteArray(frames[1], 0, frames[1].size)?.let { underBmp ->
             val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 64 }
             canvas.drawBitmap(underBmp, 0f, 0f, paint)
             underBmp.recycle()
         }
 
-        yuvToBitmap(frames[2].bytes, width, height)?.let { overBmp ->
+        BitmapFactory.decodeByteArray(frames[2], 0, frames[2].size)?.let { overBmp ->
             val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 51 }
             canvas.drawBitmap(overBmp, 0f, 0f, paint)
             overBmp.recycle()
         }
 
         return upscaleAndSave50Mp(context, baseBmp, "50MP_HDR")
-    }
-
-    private fun yuvToBitmap(nv21Bytes: ByteArray, width: Int, height: Int): Bitmap? {
-        return try {
-            val yuvImage = YuvImage(nv21Bytes, ImageFormat.NV21, width, height, null)
-            val out = ByteArrayOutputStream()
-            yuvImage.compressToJpeg(Rect(0, 0, width, height), 100, out)
-            val imageBytes = out.toByteArray()
-            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
-        }
     }
 
     private fun upscaleAndSave50Mp(
