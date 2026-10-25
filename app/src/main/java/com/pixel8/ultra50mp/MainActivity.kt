@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.view.MotionEvent
 import android.view.Surface
 import android.view.TextureView
+import android.view.View
 import android.widget.*
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -25,8 +26,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var viewFinder: AutoFitTextureView
     private lateinit var cameraOverlay: CameraOverlayView
     private lateinit var tvStatusBadge: TextView
+    private lateinit var tvTelemetry: TextView
+    private lateinit var layoutProcessingBar: LinearLayout
+    private lateinit var tvProcessingStage: TextView
+    private lateinit var tvProcessingPercent: TextView
+    private lateinit var progressBar50Mp: ProgressBar
+
     private lateinit var btnGridToggle: ToggleButton
     private lateinit var btnHdrToggle: ToggleButton
+    private lateinit var tvEvReset: TextView
+    private lateinit var evSeekBar: SeekBar
     private lateinit var btnZoom1x: Button
     private lateinit var btnZoom2x: Button
     private lateinit var btnZoom5x: Button
@@ -50,8 +59,16 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         viewFinder = findViewById(R.id.viewFinder)
         cameraOverlay = findViewById(R.id.cameraOverlay)
         tvStatusBadge = findViewById(R.id.tvStatusBadge)
+        tvTelemetry = findViewById(R.id.tvTelemetry)
+        layoutProcessingBar = findViewById(R.id.layoutProcessingBar)
+        tvProcessingStage = findViewById(R.id.tvProcessingStage)
+        tvProcessingPercent = findViewById(R.id.tvProcessingPercent)
+        progressBar50Mp = findViewById(R.id.progressBar50Mp)
+
         btnGridToggle = findViewById(R.id.btnGridToggle)
         btnHdrToggle = findViewById(R.id.btnHdrToggle)
+        tvEvReset = findViewById(R.id.tvEvReset)
+        evSeekBar = findViewById(R.id.evSeekBar)
         btnZoom1x = findViewById(R.id.btnZoom1x)
         btnZoom2x = findViewById(R.id.btnZoom2x)
         btnZoom5x = findViewById(R.id.btnZoom5x)
@@ -73,6 +90,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             },
             onAfStateChanged = { afState ->
                 runOnUiThread { cameraOverlay.afState = afState }
+            },
+            onProcessingProgress = { isVisible, percent, stageText ->
+                runOnUiThread {
+                    if (isVisible) {
+                        layoutProcessingBar.visibility = View.VISIBLE
+                        progressBar50Mp.progress = percent
+                        tvProcessingStage.text = stageText
+                        tvProcessingPercent.text = "$percent%"
+                    } else {
+                        layoutProcessingBar.visibility = View.GONE
+                    }
+                }
+            },
+            onTelemetryUpdated = { telemetryText ->
+                runOnUiThread { tvTelemetry.text = telemetryText }
             },
             onPhotoReady = { savedUri, thumbBitmap ->
                 lastSavedPhotoUri = savedUri
@@ -106,6 +138,27 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
 
         btnGridToggle.setOnCheckedChangeListener { _, isChecked ->
             cameraOverlay.showGrid = isChecked
+        }
+
+        // Exposure Compensation (EV) Slider (-2.0 EV to +2.0 EV)
+        evSeekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                if (fromUser) {
+                    val ev = (progress - 20) / 10.0f
+                    cameraEngine.setExposureEv(ev)
+                    val sign = if (ev >= 0f) "+" else ""
+                    tvEvReset.text = "EV $sign${String.format("%.1f", ev)}"
+                }
+            }
+            override fun onStartTrackingTouch(seekBar: SeekBar?) {}
+            override fun onStopTrackingTouch(seekBar: SeekBar?) {}
+        })
+
+        // Tap "EV" badge to reset exposure back to 0.0 EV
+        tvEvReset.setOnClickListener {
+            evSeekBar.progress = 20
+            cameraEngine.setExposureEv(0.0f)
+            tvEvReset.text = "EV 0.0"
         }
 
         // AI Zoom Preset Buttons
