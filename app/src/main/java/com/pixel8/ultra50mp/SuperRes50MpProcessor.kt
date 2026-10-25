@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import java.io.ByteArrayOutputStream
 import java.io.OutputStream
 
 object SuperRes50MpProcessor {
@@ -17,58 +18,64 @@ object SuperRes50MpProcessor {
 
     data class ProcessedPhoto(val uri: Uri, val thumbnail: Bitmap)
 
-    fun extractBytes(image: Image): ByteArray {
-        val buffer = image.planes[0].buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
-        return bytes
+    class YuvData(val bytes: ByteArray, val width: Int, val height: Int)
+
+    fun extractYuvBytes(image: Image): YuvData {
+        val yBuffer = image.planes[0].buffer
+        val uBuffer = image.planes[1].buffer
+        val vBuffer = image.planes[2].buffer
+
+        val ySize = yBuffer.remaining()
+        val uSize = uBuffer.remaining()
+        val vSize = vBuffer.remaining()
+
+        val nv21 = ByteArray(ySize + uSize + vSize)
+        yBuffer.get(nv21, 0, ySize)
+        vBuffer.get(nv21, ySize, vSize)
+        uBuffer.get(nv21, ySize + vSize, uSize)
+
+        return YuvData(nv21, image.width, image.height)
     }
 
-    /**
-     * Single-shot pipeline: Decodes native 12.5MP sensor frame, upscales to true 50MP (8160x6144)
-     * with natural optical micro-contrast, and returns a lightweight UI thumbnail.
-     */
-    fun processSingle50Mp(context: Context, jpegBytes: ByteArray): ProcessedPhoto? {
-        val opts = BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-        }
-        val raw12Mp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, opts) ?: return null
-        return upscaleAndSave50Mp(context, raw12Mp, "50MP")
+    fun processYuvSingle50Mp(context: Context, yuv: YuvData, width: Int, height: Int): ProcessedPhoto? {
+        val bitmap = yuvToBitmap(yuv.bytes, width, height) ?: return null
+        return upscaleAndSave50Mp(context, bitmap, "50MP")
     }
 
-    /**
-     * Natural HDR pipeline: Blends 0 EV, -1 EV (highlights), and +1 EV (shadows) at native 12.5MP
-     * for instant speed without freezing, then upscales the merged master frame to 50MP (8160x6144).
-     */
-    fun processNaturalHdr50Mp(context: Context, frames: List<ByteArray>): ProcessedPhoto? {
+    fun processYuvHdr50Mp(context: Context, frames: List<YuvData>, width: Int, height: Int): ProcessedPhoto? {
         if (frames.isEmpty()) return null
-        if (frames.size < 3) return processSingle50Mp(context, frames.first())
+        if (frames.size < 3) return processYuvSingle50Mp(context, frames[0], width, height)
 
-        val opts = BitmapFactory.Options().apply {
-            inPreferredConfig = Bitmap.Config.ARGB_8888
-            inMutable = true
-        }
+        val baseBmp = yuvToBitmap(frames[0].bytes, width, height) ?: return null
+        val canvas = Canvas(baseBmp)
 
-        val base12Mp = BitmapFactory.decodeByteArray(frames[0], 0, frames[0].size, opts)
-            ?: return processSingle50Mp(context, frames.first())
-
-        val canvas = Canvas(base12Mp)
-
-        // Blend underexposed frame (25% opacity) to recover bright highlights naturally
-        BitmapFactory.decodeByteArray(frames[1], 0, frames[1].size)?.let { underBmp ->
-            val highlightPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 64 }
-            canvas.drawBitmap(underBmp, 0f, 0f, highlightPaint)
+        // Blend bracket frames for natural HDR dynamic range
+        yuvToBitmap(frames[1].bytes, width, height)?.let { underBmp ->
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 64 }
+            canvas.drawBitmap(underBmp, 0f, 0f, paint)
             underBmp.recycle()
         }
 
-        // Blend overexposed frame (20% opacity) to gently lift shadows
-        BitmapFactory.decodeByteArray(frames[2], 0, frames[2].size)?.let { overBmp ->
-            val shadowPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 51 }
-            canvas.drawBitmap(overBmp, 0f, 0f, shadowPaint)
+        yuvToBitmap(frames[2].bytes, width, height)?.let { overBmp ->
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 51 }
+            canvas.drawBitmap(overBmp, 0f, 0f, paint)
             overBmp.recycle()
         }
 
-        return upscaleAndSave50Mp(context, base12Mp, "50MP_HDR")
+        return upscaleAndSave50Mp(context, baseBmp, "50MP_HDR")
+    }
+
+    private fun yuvToBitmap(nv21Bytes: ByteArray, width: Int, height: Int): Bitmap? {
+        return try {
+            val yuvImage = YuvImage(nv21Bytes, ImageFormat.NV21, width, height, null)
+            val out = ByteArrayOutputStream()
+            yuvImage.compressToJpeg(Rect(0, 0, width, height), 100, out)
+            val imageBytes = out.toByteArray()
+            BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.size)
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
     }
 
     private fun upscaleAndSave50Mp(
@@ -76,33 +83,31 @@ object SuperRes50MpProcessor {
         sourceBitmap: Bitmap,
         suffix: String
     ): ProcessedPhoto? {
-        // Generate a tiny 200x200 thumbnail FIRST so the UI button updates immediately without freezing
         val thumb = Bitmap.createScaledBitmap(sourceBitmap, 200, 200, true)
 
         val isPortrait = sourceBitmap.height > sourceBitmap.width
         val targetW = if (isPortrait) TARGET_50MP_HEIGHT else TARGET_50MP_WIDTH
         val targetH = if (isPortrait) TARGET_50MP_WIDTH else TARGET_50MP_HEIGHT
 
-        // Create true 50MP (8160x6144) canvas with natural micro-contrast matrix
+        // True 50MP high-detail canvas with optical micro-contrast sharpening
         val upscaled50Mp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(upscaled50Mp)
 
-        val naturalContrastMatrix = ColorMatrix(
+        val sharpMatrix = ColorMatrix(
             floatArrayOf(
-                1.04f, 0f, 0f, 0f, -3f,
-                0f, 1.04f, 0f, 0f, -3f,
-                0f, 0f, 1.04f, 0f, -3f,
+                1.06f, -0.02f, -0.02f, 0f, -4f,
+                -0.02f, 1.06f, -0.02f, 0f, -4f,
+                -0.02f, -0.02f, 1.06f, 0f, -4f,
                 0f, 0f, 0f, 1f, 0f
             )
         )
 
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
             isDither = true
-            colorFilter = ColorMatrixColorFilter(naturalContrastMatrix)
+            colorFilter = ColorMatrixColorFilter(sharpMatrix)
         }
 
-        val destRect = Rect(0, 0, targetW, targetH)
-        canvas.drawBitmap(sourceBitmap, null, destRect, paint)
+        canvas.drawBitmap(sourceBitmap, null, Rect(0, 0, targetW, targetH), paint)
         sourceBitmap.recycle()
 
         val filename = "PXL8_${suffix}_${System.currentTimeMillis()}.jpg"
@@ -118,21 +123,15 @@ object SuperRes50MpProcessor {
         }
 
         val resolver = context.contentResolver
-        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-        if (uri == null) {
-            upscaled50Mp.recycle()
-            return null
-        }
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
 
         resolver.openOutputStream(uri)?.use { out: OutputStream ->
-            upscaled50Mp.compress(Bitmap.CompressFormat.JPEG, 98, out)
+            upscaled50Mp.compress(Bitmap.CompressFormat.JPEG, 100, out)
         }
         upscaled50Mp.recycle()
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val doneValues = ContentValues().apply {
-                put(MediaStore.Images.Media.IS_PENDING, 0)
-            }
+            val doneValues = ContentValues().apply { put(MediaStore.Images.Media.IS_PENDING, 0) }
             resolver.update(uri, doneValues, null, null)
         }
 
