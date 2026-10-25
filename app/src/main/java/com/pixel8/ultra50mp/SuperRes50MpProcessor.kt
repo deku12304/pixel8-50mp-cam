@@ -46,7 +46,6 @@ object SuperRes50MpProcessor {
 
         val canvas = Canvas(baseBmp)
 
-        // Blend bracket frames for natural HDR dynamic range
         BitmapFactory.decodeByteArray(frames[1], 0, frames[1].size)?.let { underBmp ->
             val paint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 64 }
             canvas.drawBitmap(underBmp, 0f, 0f, paint)
@@ -73,7 +72,6 @@ object SuperRes50MpProcessor {
         val targetW = if (isPortrait) TARGET_50MP_HEIGHT else TARGET_50MP_WIDTH
         val targetH = if (isPortrait) TARGET_50MP_WIDTH else TARGET_50MP_HEIGHT
 
-        // True 50MP high-detail canvas with optical micro-contrast sharpening
         val upscaled50Mp = Bitmap.createBitmap(targetW, targetH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(upscaled50Mp)
 
