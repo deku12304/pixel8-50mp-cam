@@ -12,17 +12,21 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.util.Range
 import android.util.Size
 import android.view.Surface
 import java.util.concurrent.Executors
 import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.roundToInt
 
 class Pixel8CameraEngine(
     private val context: Context,
     private val onStatusChanged: (String) -> Unit,
     private val onAfStateChanged: (Int) -> Unit,
+    private val onProcessingProgress: (Boolean, Int, String) -> Unit,
+    private val onTelemetryUpdated: (String) -> Unit,
     private val onPhotoReady: (Uri, Bitmap) -> Unit
 ) {
     private var cameraDevice: CameraDevice? = null
@@ -40,15 +44,20 @@ class Pixel8CameraEngine(
     private var backCameraId: String = "0"
     private var sensorArraySize: Rect = Rect(0, 0, 4080, 3072)
     private var sensorOrientation: Int = 90
+    private var aeCompensationRange: Range<Int> = Range(-12, 12)
+    private var aeStepFloat: Float = 0.1666667f
 
     var currentZoomRatio: Float = 1.0f
         private set
     var maxZoomRatio: Float = 8.0f
         private set
+    var currentEvOffset: Float = 0.0f
+        private set
 
     private val isBusy = AtomicBoolean(false)
     private var pendingHdrMode = true
     private var lastReportedAfState = -1
+    private var lastTelemetryTimestamp = 0L
 
     private fun startBackgroundThread() {
         if (cameraThread == null || cameraThread?.isAlive == false) {
@@ -74,17 +83,37 @@ class Pixel8CameraEngine(
             request: CaptureRequest,
             result: TotalCaptureResult
         ) {
-            val afState = result.get(CaptureResult.CONTROL_AF_STATE) ?: return
-            val mappedState = when (afState) {
-                CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN,
-                CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN -> CameraOverlayView.AF_SCANNING
-                CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED,
-                CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED -> CameraOverlayView.AF_LOCKED
-                else -> CameraOverlayView.AF_PASSIVE
+            val afState = result.get(CaptureResult.CONTROL_AF_STATE)
+            if (afState != null) {
+                val mappedState = when (afState) {
+                    CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN,
+                    CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN -> CameraOverlayView.AF_SCANNING
+                    CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED,
+                    CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED -> CameraOverlayView.AF_LOCKED
+                    else -> CameraOverlayView.AF_PASSIVE
+                }
+                if (mappedState != lastReportedAfState) {
+                    lastReportedAfState = mappedState
+                    onAfStateChanged(mappedState)
+                }
             }
-            if (mappedState != lastReportedAfState) {
-                lastReportedAfState = mappedState
-                onAfStateChanged(mappedState)
+
+            // Throttle live ISO & Shutter telemetry updates to 4 times per second
+            val now = System.currentTimeMillis()
+            if (now - lastTelemetryTimestamp >= 250L) {
+                lastTelemetryTimestamp = now
+                val iso = result.get(CaptureResult.SENSOR_SENSITIVITY)
+                val expTimeNs = result.get(CaptureResult.SENSOR_EXPOSURE_TIME)
+                if (iso != null && expTimeNs != null && expTimeNs > 0) {
+                    val shutterStr = if (expTimeNs >= 1_000_000_000L) {
+                        String.format("%.1fs", expTimeNs / 1_000_000_000.0)
+                    } else {
+                        val denom = (1_000_000_000.0 / expTimeNs).roundToInt().coerceAtLeast(1)
+                        "1/${denom}s"
+                    }
+                    val evSign = if (currentEvOffset >= 0f) "+" else ""
+                    onTelemetryUpdated("ISO $iso  •  $shutterStr  •  ${evSign}${String.format("%.1f", currentEvOffset)} EV")
+                }
             }
         }
     }
@@ -99,7 +128,6 @@ class Pixel8CameraEngine(
                 if (!cameraOpenCloseLock.tryAcquire(2500, TimeUnit.MILLISECONDS)) {
                     return@post
                 }
-                // Close any stale session cleanly before opening
                 captureSession?.close()
                 captureSession = null
                 cameraDevice?.close()
@@ -113,6 +141,14 @@ class Pixel8CameraEngine(
                 sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
                 sensorArraySize = characteristics.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
                     ?: Rect(0, 0, 4080, 3072)
+
+                characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)?.let {
+                    aeCompensationRange = it
+                }
+                characteristics.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.let { stepRational ->
+                    val stepVal = stepRational.toFloat()
+                    if (stepVal > 0f) aeStepFloat = stepVal
+                }
 
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                     val zoomRange = characteristics.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
@@ -136,7 +172,8 @@ class Pixel8CameraEngine(
 
                         val hdrActive = pendingHdrMode
                         val zoomActive = currentZoomRatio
-                        onStatusChanged("AI Upscaling to 50MP (${String.format("%.1fx", zoomActive)})...")
+                        onStatusChanged("50MP AI ENGINE ACTIVE...")
+                        onProcessingProgress(true, 5, "STAGE 1/4 • Acquiring Sensor Buffer...")
 
                         processingExecutor.execute {
                             try {
@@ -144,13 +181,17 @@ class Pixel8CameraEngine(
                                     context = context,
                                     jpegBytes = bytes,
                                     enableHdr = hdrActive,
-                                    zoomRatio = zoomActive
+                                    zoomRatio = zoomActive,
+                                    onProgress = { percent, stageText ->
+                                        onProcessingProgress(true, percent, stageText)
+                                    }
                                 )
                                 if (result != null) {
                                     onPhotoReady(result.uri, result.thumbnail)
                                 }
                             } finally {
                                 isBusy.set(false)
+                                onProcessingProgress(false, 100, "READY")
                                 onStatusChanged("50MP PRO • ${String.format("%.1fx", currentZoomRatio)} READY")
                             }
                         }
@@ -174,7 +215,7 @@ class Pixel8CameraEngine(
                         cameraOpenCloseLock.release()
                         camera.close()
                         cameraDevice = null
-                        onStatusChanged("Camera Error ($error) - Retrying...")
+                        onStatusChanged("Camera Error ($error)")
                     }
                 }, handler)
             } catch (e: Exception) {
@@ -195,7 +236,9 @@ class Pixel8CameraEngine(
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
                 set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+                applyProIspQualitySettings(this, isStillCapture = false)
                 applyZoomToBuilder(this, currentZoomRatio)
+                applyEvToBuilder(this, currentEvOffset)
             }
 
             device.createCaptureSession(
@@ -219,6 +262,25 @@ class Pixel8CameraEngine(
         }
     }
 
+    private fun applyProIspQualitySettings(builder: CaptureRequest.Builder, isStillCapture: Boolean) {
+        // Activate Pixel 8 hardware optical & ISP quality blocks
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            builder.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CaptureRequest.DISTORTION_CORRECTION_MODE_HIGH_QUALITY)
+        }
+        builder.set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY)
+        builder.set(CaptureRequest.SHADING_MODE, CaptureRequest.SHADING_MODE_HIGH_QUALITY)
+        builder.set(CaptureRequest.HOT_PIXEL_MODE, CaptureRequest.HOT_PIXEL_MODE_HIGH_QUALITY)
+
+        if (isStillCapture) {
+            builder.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+            builder.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+            builder.set(CaptureRequest.TONEMAP_MODE, CaptureRequest.TONEMAP_MODE_HIGH_QUALITY)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder.set(CaptureRequest.CONTROL_ENABLE_ZSL, true)
+            }
+        }
+    }
+
     private fun updateRepeatingPreview() {
         val session = captureSession ?: return
         val builder = previewRequestBuilder ?: return
@@ -230,15 +292,24 @@ class Pixel8CameraEngine(
         }
     }
 
-    /**
-     * AI-Enhanced Zoom: Applies hardware sensor crop / zoom ratio smoothly in real time.
-     */
     fun setZoom(ratio: Float) {
         currentZoomRatio = ratio.coerceIn(1.0f, maxZoomRatio)
         val builder = previewRequestBuilder ?: return
         applyZoomToBuilder(builder, currentZoomRatio)
         updateRepeatingPreview()
         onStatusChanged("50MP PRO • ${String.format("%.1fx", currentZoomRatio)} AI ZOOM")
+    }
+
+    fun setExposureEv(evValue: Float) {
+        currentEvOffset = evValue.coerceIn(-2.0f, 2.0f)
+        val builder = previewRequestBuilder ?: return
+        applyEvToBuilder(builder, currentEvOffset)
+        updateRepeatingPreview()
+    }
+
+    private fun applyEvToBuilder(builder: CaptureRequest.Builder, evOffset: Float) {
+        val steps = (evOffset / aeStepFloat).roundToInt().coerceIn(aeCompensationRange.lower, aeCompensationRange.upper)
+        builder.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, steps)
     }
 
     private fun applyZoomToBuilder(builder: CaptureRequest.Builder, zoom: Float) {
@@ -253,15 +324,11 @@ class Pixel8CameraEngine(
         }
     }
 
-    /**
-     * Dedicated Crosshair Tap-to-Focus: Locks hardware AF & AE onto the exact tapped coordinates.
-     */
     fun focusAtPoint(normX: Float, normY: Float) {
         val session = captureSession ?: return
         val builder = previewRequestBuilder ?: return
         val handler = cameraHandler ?: return
 
-        // Map portrait screen normalized (0..1) coordinates to sensor coordinates (rotated 90 deg)
         val sensorX = (normY * sensorArraySize.width()).toInt().coerceIn(0, sensorArraySize.width() - 1)
         val sensorY = ((1f - normX) * sensorArraySize.height()).toInt().coerceIn(0, sensorArraySize.height() - 1)
 
@@ -289,9 +356,6 @@ class Pixel8CameraEngine(
         }
     }
 
-    /**
-     * Resets focus back to center Continuous Autofocus (AF-C).
-     */
     fun resetContinuousFocus() {
         val builder = previewRequestBuilder ?: return
         try {
@@ -308,7 +372,7 @@ class Pixel8CameraEngine(
 
     fun capturePhoto(enableHdr: Boolean) {
         if (!isBusy.compareAndSet(false, true)) {
-            onStatusChanged("Saving previous 50MP shot...")
+            onStatusChanged("Busy processing 50MP shot...")
             return
         }
 
@@ -319,11 +383,11 @@ class Pixel8CameraEngine(
         val handler = cameraHandler ?: run { isBusy.set(false); return }
 
         pendingHdrMode = enableHdr
-        onStatusChanged(if (enableHdr) "Capturing 50MP Natural HDR..." else "Capturing 50MP Pro Shot...")
+        onStatusChanged("Capturing 50MP Master Frame...")
+        onProcessingProgress(true, 2, "Capturing High-Res Sensor Frame...")
 
         try {
             val stillBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                // Attach BOTH surfaces so the viewfinder never goes black or freezes during capture!
                 addTarget(readerSurface)
                 addTarget(surf)
 
@@ -331,11 +395,9 @@ class Pixel8CameraEngine(
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                 set(CaptureRequest.CONTROL_AF_MODE, previewRequestBuilder?.get(CaptureRequest.CONTROL_AF_MODE)
                     ?: CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-                set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
-                set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-                set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY)
 
-                // Carry over active focus metering regions & AI zoom ratio
+                applyProIspQualitySettings(this, isStillCapture = true)
+
                 previewRequestBuilder?.get(CaptureRequest.CONTROL_AF_REGIONS)?.let {
                     set(CaptureRequest.CONTROL_AF_REGIONS, it)
                 }
@@ -343,6 +405,7 @@ class Pixel8CameraEngine(
                     set(CaptureRequest.CONTROL_AE_REGIONS, it)
                 }
                 applyZoomToBuilder(this, currentZoomRatio)
+                applyEvToBuilder(this, currentEvOffset)
             }
 
             session.capture(
@@ -361,6 +424,7 @@ class Pixel8CameraEngine(
         } catch (e: Exception) {
             e.printStackTrace()
             isBusy.set(false)
+            onProcessingProgress(false, 0, "")
         }
     }
 
@@ -374,9 +438,6 @@ class Pixel8CameraEngine(
         return cameraManager.cameraIdList.first()
     }
 
-    /**
-     * Called on onPause(): Cleanly closes camera hardware without killing the app's executor.
-     */
     fun stopCamera() {
         try {
             cameraOpenCloseLock.acquire()
