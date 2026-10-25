@@ -48,7 +48,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         btnCapture = findViewById(R.id.btnCapture)
         btnPreviewThumbnail = findViewById(R.id.btnPreviewThumbnail)
 
-        // Setup Gyro/Rotation Vector Sensor for Level Indicator
+        // Lock viewfinder to 3:4 portrait aspect ratio so preview is never squeezed
+        viewFinder.setAspectRatio(3, 4)
+
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         rotationSensor = sensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
 
@@ -57,10 +59,12 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             onStatusChanged = { statusText ->
                 runOnUiThread { tvStatusBadge.text = statusText }
             },
-            onPhotoSaved = { savedUri ->
+            onPhotoReady = { savedUri, thumbBitmap ->
                 lastSavedPhotoUri = savedUri
                 runOnUiThread {
-                    btnPreviewThumbnail.setImageURI(savedUri)
+                    // Uses lightweight 200x200 bitmap so UI never freezes
+                    btnPreviewThumbnail.setImageBitmap(thumbBitmap)
+                    Toast.makeText(this, "50MP Photo Saved!", Toast.LENGTH_SHORT).show()
                 }
             }
         )
@@ -87,7 +91,9 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun setupViewFinder() {
         viewFinder.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-                texture.setDefaultBufferSize(1920, 1440)
+                // Set native 4:3 buffer size and lock 3:4 portrait ratio
+                viewFinder.setAspectRatio(3, 4)
+                texture.setDefaultBufferSize(1440, 1080)
                 cameraEngine.startCamera(Surface(texture))
             }
             override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
@@ -127,6 +133,8 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == 1001 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
             if (viewFinder.isAvailable) {
+                viewFinder.setAspectRatio(3, 4)
+                viewFinder.surfaceTexture?.setDefaultBufferSize(1440, 1080)
                 cameraEngine.startCamera(Surface(viewFinder.surfaceTexture))
             } else {
                 setupViewFinder()
