@@ -23,7 +23,7 @@ class Pixel8CameraEngine(
     private var captureSession: CameraCaptureSession? = null
     private var previewRequestBuilder: CaptureRequest.Builder? = null
     private var imageReader: ImageReader? = null
-    private var previewSurface: Surface? = null
+    private var activeSurface: Surface? = null
 
     private val cameraThread = HandlerThread("Pixel8CameraThread").apply { start() }
     private val cameraHandler = Handler(cameraThread.looper)
@@ -33,65 +33,56 @@ class Pixel8CameraEngine(
     private var backCameraId: String = "0"
     private var sensorOrientation: Int = 90
 
-    var previewSize: Size = Size(1920, 1440)
-        private set
-
     private val isBusy = AtomicBoolean(false)
     private var isHdrCapture = false
     private val hdrFrames = mutableListOf<ByteArray>()
 
     @SuppressLint("MissingPermission")
     fun startCamera(surface: Surface) {
-        previewSurface = surface
+        activeSurface = surface
         backCameraId = findBackCameraId()
         val characteristics = cameraManager.getCameraCharacteristics(backCameraId)
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val fullSensorJpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
+        // Use YUV_420_888 for high-detail uncompressed sensor data extraction
+        val maxResolution = map?.getOutputSizes(ImageFormat.YUV_420_888)?.maxByOrNull { it.width * it.height }
             ?: Size(4080, 3072)
 
-        previewSize = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
-            ?.filter { it.width * 3 == it.height * 4 && it.width <= 1920 }
-            ?.maxByOrNull { it.width * it.height }
-            ?: Size(1440, 1080)
-
         imageReader = ImageReader.newInstance(
-            fullSensorJpegSize.width,
-            fullSensorJpegSize.height,
-            ImageFormat.JPEG,
+            maxResolution.width,
+            maxResolution.height,
+            ImageFormat.YUV_420_888,
             4
         ).apply {
             setOnImageAvailableListener({ reader ->
                 val image = reader.acquireNextImage() ?: return@setOnImageAvailableListener
-                val bytes = SuperRes50MpProcessor.extractBytes(image)
+                val yuvBytes = SuperRes50MpProcessor.extractYuvBytes(image)
+                val width = image.width
+                val height = image.height
                 image.close()
 
                 if (isHdrCapture) {
                     synchronized(hdrFrames) {
-                        hdrFrames.add(bytes)
+                        hdrFrames.add(yuvBytes)
                         if (hdrFrames.size == 3) {
                             val capturedList = hdrFrames.toList()
                             hdrFrames.clear()
-                            onStatusChanged("Upscaling 50MP Natural HDR...")
+                            onStatusChanged("Processing 50MP Natural HDR...")
                             processingExecutor.execute {
-                                val result = SuperRes50MpProcessor.processNaturalHdr50Mp(context, capturedList)
+                                val result = SuperRes50MpProcessor.processYuvHdr50Mp(context, capturedList, width, height)
                                 isBusy.set(false)
-                                if (result != null) {
-                                    onPhotoReady(result.uri, result.thumbnail)
-                                }
+                                if (result != null) onPhotoReady(result.uri, result.thumbnail)
                                 onStatusChanged("50MP (8160x6144) • READY")
                             }
                         }
                     }
                 } else {
-                    onStatusChanged("Upscaling to 50MP...")
+                    onStatusChanged("Processing 50MP Detail...")
                     processingExecutor.execute {
-                        val result = SuperRes50MpProcessor.processSingle50Mp(context, bytes)
+                        val result = SuperRes50MpProcessor.processYuvSingle50Mp(context, yuvBytes, width, height)
                         isBusy.set(false)
-                        if (result != null) {
-                            onPhotoReady(result.uri, result.thumbnail)
-                        }
+                        if (result != null) onPhotoReady(result.uri, result.thumbnail)
                         onStatusChanged("50MP (8160x6144) • READY")
                     }
                 }
@@ -103,8 +94,14 @@ class Pixel8CameraEngine(
                 cameraDevice = camera
                 createSession(surface)
             }
-            override fun onDisconnected(camera: CameraDevice) { camera.close() }
-            override fun onError(camera: CameraDevice, error: Int) { camera.close() }
+            override fun onDisconnected(camera: CameraDevice) {
+                camera.close()
+                cameraDevice = null
+            }
+            override fun onError(camera: CameraDevice, error: Int) {
+                camera.close()
+                cameraDevice = null
+            }
         }, cameraHandler)
     }
 
@@ -114,7 +111,6 @@ class Pixel8CameraEngine(
 
         previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(surface)
-            // Enforce continuous phase-detection autofocus for sharp, instant tracking
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
@@ -146,19 +142,16 @@ class Pixel8CameraEngine(
         }
     }
 
-    /**
-     * Instantly triggers capture with continuous autofocus locked, ensuring zero preview freezes.
-     */
     fun capturePhoto(enableHdr: Boolean) {
         if (!isBusy.compareAndSet(false, true)) {
-            onStatusChanged("Processing previous 50MP shot...")
+            onStatusChanged("Processing previous shot...")
             return
         }
 
         val device = cameraDevice ?: run { isBusy.set(false); return }
         val session = captureSession ?: run { isBusy.set(false); return }
         val readerSurface = imageReader?.surface ?: run { isBusy.set(false); return }
-        val surf = previewSurface ?: run { isBusy.set(false); return }
+        val surf = activeSurface ?: run { isBusy.set(false); return }
 
         isHdrCapture = enableHdr
         onStatusChanged(if (enableHdr) "Capturing 3-Frame HDR..." else "Capturing 50MP Photo...")
@@ -169,7 +162,6 @@ class Pixel8CameraEngine(
                 request: CaptureRequest,
                 result: TotalCaptureResult
             ) {
-                // Keep preview repeating seamlessly so the app never freezes
                 startRepeatingPreview()
             }
         }
@@ -177,24 +169,20 @@ class Pixel8CameraEngine(
         if (!isHdrCapture) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(readerSurface)
-                addTarget(surf) // Keeps viewfinder streaming uninterrupted
-                set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+                addTarget(surf)
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
                 set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
             }.build()
-
             session.capture(request, captureCallback, cameraHandler)
         } else {
             synchronized(hdrFrames) { hdrFrames.clear() }
-            // Natural exposure steps: Base (0 EV), Underexposed (-6), Overexposed (+6)
             val exposures = listOf(0, -6, 6)
             val burst = exposures.map { ev ->
                 device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(readerSurface)
                     addTarget(surf)
-                    set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                     set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                     set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
@@ -217,9 +205,16 @@ class Pixel8CameraEngine(
     }
 
     fun release() {
-        captureSession?.close()
-        cameraDevice?.close()
-        imageReader?.close()
+        try {
+            captureSession?.close()
+            cameraDevice?.close()
+            imageReader?.close()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        captureSession = null
+        cameraDevice = null
+        imageReader = null
         cameraThread.quitSafely()
         processingExecutor.shutdown()
     }
