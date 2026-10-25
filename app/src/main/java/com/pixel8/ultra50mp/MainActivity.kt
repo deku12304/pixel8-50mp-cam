@@ -48,7 +48,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         btnCapture = findViewById(R.id.btnCapture)
         btnPreviewThumbnail = findViewById(R.id.btnPreviewThumbnail)
 
-        // Lock viewfinder to 3:4 portrait aspect ratio so preview is never squeezed
         viewFinder.setAspectRatio(3, 4)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
@@ -62,7 +61,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             onPhotoReady = { savedUri, thumbBitmap ->
                 lastSavedPhotoUri = savedUri
                 runOnUiThread {
-                    // Uses lightweight 200x200 bitmap so UI never freezes
                     btnPreviewThumbnail.setImageBitmap(thumbBitmap)
                     Toast.makeText(this, "50MP Photo Saved!", Toast.LENGTH_SHORT).show()
                 }
@@ -81,9 +79,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             openInGooglePhotos(lastSavedPhotoUri)
         }
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-            setupViewFinder()
-        } else {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1001)
         }
     }
@@ -91,7 +87,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private fun setupViewFinder() {
         viewFinder.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
-                // Set native 4:3 buffer size and lock 3:4 portrait ratio
                 viewFinder.setAspectRatio(3, 4)
                 texture.setDefaultBufferSize(1440, 1080)
                 cameraEngine.startCamera(Surface(texture))
@@ -99,6 +94,11 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
             override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean = true
             override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
+        }
+        if (viewFinder.isAvailable) {
+            viewFinder.setAspectRatio(3, 4)
+            viewFinder.surfaceTexture?.setDefaultBufferSize(1440, 1080)
+            cameraEngine.startCamera(Surface(viewFinder.surfaceTexture))
         }
     }
 
@@ -125,33 +125,19 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         }
     }
 
-    override fun onRequestPermissionsResult(
-        requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
-    ) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == 1001 && grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
-            if (viewFinder.isAvailable) {
-                viewFinder.setAspectRatio(3, 4)
-                viewFinder.surfaceTexture?.setDefaultBufferSize(1440, 1080)
-                cameraEngine.startCamera(Surface(viewFinder.surfaceTexture))
-            } else {
-                setupViewFinder()
-            }
-        }
-    }
-
     override fun onResume() {
         super.onResume()
         rotationSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
+        // Instantly restart camera preview when returning from Google Photos
+        setupViewFinder()
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+        cameraEngine.release()
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
