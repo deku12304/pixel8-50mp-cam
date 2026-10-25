@@ -35,6 +35,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var rotationSensor: Sensor? = null
 
     private var lastSavedPhotoUri: Uri? = null
+    private var isCameraStarted = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -79,26 +80,29 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             openInGooglePhotos(lastSavedPhotoUri)
         }
 
+        setupViewFinderListener()
+
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.CAMERA), 1001)
         }
     }
 
-    private fun setupViewFinder() {
+    private fun setupViewFinderListener() {
         viewFinder.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
             override fun onSurfaceTextureAvailable(texture: SurfaceTexture, width: Int, height: Int) {
                 viewFinder.setAspectRatio(3, 4)
                 texture.setDefaultBufferSize(1440, 1080)
-                cameraEngine.startCamera(Surface(texture))
+                if (!isCameraStarted) {
+                    isCameraStarted = true
+                    cameraEngine.startCamera(Surface(texture))
+                }
             }
             override fun onSurfaceTextureSizeChanged(texture: SurfaceTexture, width: Int, height: Int) {}
-            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean = true
+            override fun onSurfaceTextureDestroyed(texture: SurfaceTexture): Boolean {
+                isCameraStarted = false
+                return true
+            }
             override fun onSurfaceTextureUpdated(texture: SurfaceTexture) {}
-        }
-        if (viewFinder.isAvailable) {
-            viewFinder.setAspectRatio(3, 4)
-            viewFinder.surfaceTexture?.setDefaultBufferSize(1440, 1080)
-            cameraEngine.startCamera(Surface(viewFinder.surfaceTexture))
         }
     }
 
@@ -130,12 +134,21 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         rotationSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
-        setupViewFinder()
+        // If surface is already available when returning from gallery, start camera immediately
+        if (viewFinder.isAvailable && !isCameraStarted) {
+            viewFinder.surfaceTexture?.let { texture ->
+                viewFinder.setAspectRatio(3, 4)
+                texture.setDefaultBufferSize(1440, 1080)
+                isCameraStarted = true
+                cameraEngine.startCamera(Surface(texture))
+            }
+        }
     }
 
     override fun onPause() {
         super.onPause()
         sensorManager.unregisterListener(this)
+        isCameraStarted = false
         cameraEngine.release()
     }
 
