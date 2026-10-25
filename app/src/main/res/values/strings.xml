@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Pixel 8 50MP Cam</string>
+    <string name="shutter_desc">Capture 50MP Photo</string>
+    <string name="mode_badge_initial">Initializing ISOCELL GNV 50MP Sensor…</string>
+    <string name="save_raw_dng">Save 16-Bit RAW (.DNG)</string>
+    <string name="burst_8_frames">Ultra 8-Frame SR (Best 50MP Detail)</string>
+</resources>
