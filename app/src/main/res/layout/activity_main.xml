@@ -17,68 +17,172 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent" />
 
-    <!-- Top Pro HUD Bar -->
+    <!-- Top Container: Pro HUD Bar + Live Telemetry + 50MP Processing Status Bar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="top"
-        android:background="#55000000"
-        android:gravity="center_vertical"
-        android:orientation="horizontal"
-        android:paddingHorizontal="14dp"
-        android:paddingVertical="12dp">
+        android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvStatusBadge"
-            android:layout_width="0dp"
+        <!-- Main Top Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
+            android:background="#66000000"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="10dp">
+
+            <TextView
+                android:id="@+id/tvStatusBadge"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:background="@drawable/badge_bg"
+                android:paddingHorizontal="12dp"
+                android:paddingVertical="6dp"
+                android:text="50MP PRO • 1.0x READY"
+                android:textColor="#00E676"
+                android:textSize="12sp"
+                android:textStyle="bold" />
+
+            <ToggleButton
+                android:id="@+id/btnGridToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/badge_bg"
+                android:checked="true"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textOff="GRID OFF"
+                android:textOn="GRID ON"
+                android:textSize="11sp" />
+
+            <ToggleButton
+                android:id="@+id/btnHdrToggle"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/badge_bg"
+                android:checked="true"
+                android:paddingHorizontal="10dp"
+                android:textColor="#FFFFFF"
+                android:textOff="HDR OFF"
+                android:textOn="HDR ON"
+                android:textSize="11sp" />
+        </LinearLayout>
+
+        <!-- Live Sensor Telemetry Pill (ISO • Shutter Speed • EV) -->
+        <TextView
+            android:id="@+id/tvTelemetry"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:layout_marginTop="6dp"
             android:background="@drawable/badge_bg"
-            android:paddingHorizontal="12dp"
-            android:paddingVertical="6dp"
-            android:text="50MP PRO • 1.0x READY"
-            android:textColor="#00E676"
-            android:textSize="12sp"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="4dp"
+            android:text="ISO --  •  1/--s  •  +0.0 EV"
+            android:textColor="#CCFFFFFF"
+            android:textSize="11sp"
             android:textStyle="bold" />
 
-        <ToggleButton
-            android:id="@+id/btnGridToggle"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_marginStart="8dp"
+        <!-- Dedicated 50MP Processing Status Bar Component -->
+        <LinearLayout
+            android:id="@+id/layoutProcessingBar"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginHorizontal="16dp"
+            android:layout_marginTop="8dp"
             android:background="@drawable/badge_bg"
-            android:checked="true"
-            android:paddingHorizontal="10dp"
-            android:textColor="#FFFFFF"
-            android:textOff="GRID OFF"
-            android:textOn="GRID ON"
-            android:textSize="11sp" />
+            android:orientation="vertical"
+            android:paddingHorizontal="14dp"
+            android:paddingVertical="10dp"
+            android:visibility="gone">
 
-        <ToggleButton
-            android:id="@+id/btnHdrToggle"
-            android:layout_width="wrap_content"
-            android:layout_height="36dp"
-            android:layout_marginStart="8dp"
-            android:background="@drawable/badge_bg"
-            android:checked="true"
-            android:paddingHorizontal="10dp"
-            android:textColor="#FFFFFF"
-            android:textOff="HDR OFF"
-            android:textOn="HDR ON"
-            android:textSize="11sp" />
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:gravity="center_vertical"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/tvProcessingStage"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_weight="1"
+                    android:text="STAGE 1/4 • AI 50MP Engine..."
+                    android:textColor="#00E676"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvProcessingPercent"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="0%"
+                    android:textColor="#FFFFFF"
+                    android:textSize="11sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <ProgressBar
+                android:id="@+id/progressBar50Mp"
+                style="?android:attr/progressBarStyleHorizontal"
+                android:layout_width="match_parent"
+                android:layout_height="6dp"
+                android:layout_marginTop="6dp"
+                android:max="100"
+                android:progress="0"
+                android:progressTint="#00E676"
+                android:progressBackgroundTint="#44FFFFFF" />
+        </LinearLayout>
 
     </LinearLayout>
 
-    <!-- Bottom Pro Camera Controls + AI Zoom Bar -->
+    <!-- Bottom Pro Camera Controls + EV Slider + AI Zoom Bar -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
-        android:background="#88000000"
+        android:background="#99000000"
         android:gravity="center_horizontal"
         android:orientation="vertical"
-        android:paddingTop="10dp"
-        android:paddingBottom="24dp">
+        android:paddingTop="8dp"
+        android:paddingBottom="20dp">
+
+        <!-- Exposure Compensation (EV) Row -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingHorizontal="28dp"
+            android:layout_marginBottom="6dp">
+
+            <TextView
+                android:id="@+id/tvEvReset"
+                android:layout_width="58dp"
+                android:layout_height="26dp"
+                android:background="@drawable/badge_bg"
+                android:gravity="center"
+                android:text="EV 0.0"
+                android:textColor="#FFD600"
+                android:textSize="11sp"
+                android:textStyle="bold" />
+
+            <SeekBar
+                android:id="@+id/evSeekBar"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:max="40"
+                android:progress="20"
+                android:progressTint="#FFD600"
+                android:thumbTint="#FFFFFF" />
+        </LinearLayout>
 
         <!-- Quick AI Zoom Preset Buttons (1x, 2x, 5x, 8x) -->
         <LinearLayout
@@ -90,7 +194,7 @@
             <Button
                 android:id="@+id/btnZoom1x"
                 android:layout_width="52dp"
-                android:layout_height="36dp"
+                android:layout_height="34dp"
                 android:layout_marginHorizontal="4dp"
                 android:background="@drawable/badge_bg"
                 android:text="1x"
@@ -101,7 +205,7 @@
             <Button
                 android:id="@+id/btnZoom2x"
                 android:layout_width="52dp"
-                android:layout_height="36dp"
+                android:layout_height="34dp"
                 android:layout_marginHorizontal="4dp"
                 android:background="@drawable/badge_bg"
                 android:text="2x"
@@ -112,7 +216,7 @@
             <Button
                 android:id="@+id/btnZoom5x"
                 android:layout_width="52dp"
-                android:layout_height="36dp"
+                android:layout_height="34dp"
                 android:layout_marginHorizontal="4dp"
                 android:background="@drawable/badge_bg"
                 android:text="5x"
@@ -123,7 +227,7 @@
             <Button
                 android:id="@+id/btnZoom8x"
                 android:layout_width="52dp"
-                android:layout_height="36dp"
+                android:layout_height="34dp"
                 android:layout_marginHorizontal="4dp"
                 android:background="@drawable/badge_bg"
                 android:text="8x"
@@ -137,8 +241,8 @@
             android:id="@+id/zoomSeekBar"
             android:layout_width="260dp"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:layout_marginBottom="12dp"
+            android:layout_marginTop="6dp"
+            android:layout_marginBottom="10dp"
             android:max="70"
             android:progress="0"
             android:progressTint="#00E676"
@@ -147,7 +251,7 @@
         <!-- Shutter Row: AF-C Reset (Left), 50MP Shutter (Center), Google Photos Preview (Right) -->
         <RelativeLayout
             android:layout_width="match_parent"
-            android:layout_height="90dp"
+            android:layout_height="84dp"
             android:paddingHorizontal="32dp">
 
             <Button
