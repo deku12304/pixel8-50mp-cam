@@ -21,7 +21,6 @@ class Pixel8CameraEngine(
 ) {
     private var cameraDevice: CameraDevice? = null
     private var captureSession: CameraCaptureSession? = null
-    private var previewRequestBuilder: CaptureRequest.Builder? = null
     private var imageReader: ImageReader? = null
     private var activeSurface: Surface? = null
 
@@ -31,8 +30,7 @@ class Pixel8CameraEngine(
 
     private val cameraManager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
     private var backCameraId: String = "0"
-    private var sensorOrientation: Int = 90
-
+    
     private val isBusy = AtomicBoolean(false)
     private var isHdrCapture = false
     private val hdrFrames = mutableListOf<ByteArray>()
@@ -41,9 +39,8 @@ class Pixel8CameraEngine(
     fun startCamera(surface: Surface) {
         activeSurface = surface
         backCameraId = findBackCameraId()
-        val characteristics = cameraManager.getCameraCharacteristics(backCameraId)
-        sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
+        val characteristics = cameraManager.getCameraCharacteristics(backCameraId)
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
         val maxResolution = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
             ?: Size(4080, 3072)
@@ -72,6 +69,8 @@ class Pixel8CameraEngine(
                                 isBusy.set(false)
                                 if (result != null) onPhotoReady(result.uri, result.thumbnail)
                                 onStatusChanged("50MP (8160x6144) • READY")
+                                // Restart preview session safely after save
+                                restartPreviewSession()
                             }
                         }
                     }
@@ -82,59 +81,79 @@ class Pixel8CameraEngine(
                         isBusy.set(false)
                         if (result != null) onPhotoReady(result.uri, result.thumbnail)
                         onStatusChanged("50MP (8160x6144) • READY")
+                        // Restart preview session safely after save
+                        restartPreviewSession()
                     }
                 }
             }, cameraHandler)
         }
 
-        cameraManager.openCamera(backCameraId, object : CameraDevice.StateCallback() {
-            override fun onOpened(camera: CameraDevice) {
-                cameraDevice = camera
-                createSession(surface)
-            }
-            override fun onDisconnected(camera: CameraDevice) {
-                camera.close()
-                cameraDevice = null
-            }
-            override fun onError(camera: CameraDevice, error: Int) {
-                camera.close()
-                cameraDevice = null
-            }
-        }, cameraHandler)
+        openCameraDevice(surface)
     }
 
-    private fun createSession(surface: Surface) {
-        val device = cameraDevice ?: return
+    @SuppressLint("MissingPermission")
+    private fun openCameraDevice(surface: Surface) {
+        try {
+            cameraManager.openCamera(backCameraId, object : CameraDevice.StateCallback() {
+                override fun onOpened(camera: CameraDevice) {
+                    cameraDevice = camera
+                    createPreviewSession(camera, surface)
+                }
+                override fun onDisconnected(camera: CameraDevice) {
+                    camera.close()
+                    cameraDevice = null
+                }
+                override fun onError(camera: CameraDevice, error: Int) {
+                    camera.close()
+                    cameraDevice = null
+                }
+            }, cameraHandler)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun createPreviewSession(device: CameraDevice, surface: Surface) {
         val readerSurface = imageReader?.surface ?: return
 
-        previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
-            addTarget(surface)
-            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
-            set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
-        }
+        try {
+            val previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(surface)
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
+                set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
+            }
 
-        device.createCaptureSession(
-            listOf(surface, readerSurface),
-            object : CameraCaptureSession.StateCallback() {
-                override fun onConfigured(session: CameraCaptureSession) {
-                    captureSession = session
-                    startRepeatingPreview()
-                    onStatusChanged("50MP (8160x6144) • READY")
-                }
-                override fun onConfigureFailed(session: CameraCaptureSession) {
-                    onStatusChanged("Session Configuration Failed")
-                }
-            },
-            cameraHandler
-        )
+            device.createCaptureSession(
+                listOf(surface, readerSurface),
+                object : CameraCaptureSession.StateCallback() {
+                    override fun onConfigured(session: CameraCaptureSession) {
+                        captureSession = session
+                        try {
+                            session.setRepeatingRequest(previewRequestBuilder.build(), null, cameraHandler)
+                            onStatusChanged("50MP (8160x6144) • READY")
+                        } catch (e: Exception) {
+                            e.printStackTrace()
+                        }
+                    }
+                    override fun onConfigureFailed(session: CameraCaptureSession) {
+                        onStatusChanged("Session Config Failed")
+                    }
+                },
+                cameraHandler
+            )
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
-    private fun startRepeatingPreview() {
-        val session = captureSession ?: return
-        val builder = previewRequestBuilder ?: return
+    private fun restartPreviewSession() {
+        val surface = activeSurface ?: return
+        val device = cameraDevice ?: return
         try {
-            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+            captureSession?.close()
+            captureSession = null
+            createPreviewSession(device, surface)
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -153,29 +172,17 @@ class Pixel8CameraEngine(
         isHdrCapture = enableHdr
         onStatusChanged(if (enableHdr) "Capturing 3-Frame HDR..." else "Capturing 50MP Photo...")
 
-        // Instantly resume preview repeating right after the hardware triggers capture so viewfinder doesn't lock
-        val captureCallback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureStarted(
-                session: CameraCaptureSession,
-                request: CaptureRequest,
-                timestamp: Long,
-                frameNumber: Long
-            ) {
-                // Instantly resume viewfinder preview stream while photo saves in background
-                startRepeatingPreview()
-            }
-        }
-
         if (!isHdrCapture) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(readerSurface)
                 set(CaptureRequest.JPEG_QUALITY, 100.toByte())
-                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                // Fixed portrait orientation (90 degrees)
+                set(CaptureRequest.JPEG_ORIENTATION, 90)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
                 set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
             }.build()
-            session.capture(request, captureCallback, cameraHandler)
+            session.capture(request, null, cameraHandler)
         } else {
             synchronized(hdrFrames) { hdrFrames.clear() }
             val exposures = listOf(0, -6, 6)
@@ -183,14 +190,14 @@ class Pixel8CameraEngine(
                 device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(readerSurface)
                     set(CaptureRequest.JPEG_QUALITY, 100.toByte())
-                    set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                    set(CaptureRequest.JPEG_ORIENTATION, 90)
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                     set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
                     set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
                     set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
                 }.build()
             }
-            session.captureBurst(burst, captureCallback, cameraHandler)
+            session.captureBurst(burst, null, cameraHandler)
         }
     }
 
@@ -215,7 +222,11 @@ class Pixel8CameraEngine(
         captureSession = null
         cameraDevice = null
         imageReader = null
-        cameraThread.quitSafely()
+        try {
+            cameraThread.quitSafely()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
         processingExecutor.shutdown()
     }
 }
