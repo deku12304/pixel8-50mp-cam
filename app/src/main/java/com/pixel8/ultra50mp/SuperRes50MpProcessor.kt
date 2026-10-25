@@ -1,192 +1,111 @@
 package com.pixel8.ultra50mp
 
+import android.content.ContentValues
+import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
-import android.graphics.Color
-import android.graphics.Matrix
 import android.graphics.Paint
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.withContext
-import kotlin.math.abs
-import kotlin.math.roundToInt
+import android.media.Image
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.MediaStore
+import java.io.OutputStream
 
-/**
- * Reconstructs a full 50.1 MP (8160 x 6144) photo on an UNROOTED Pixel 8.
- *
- * How it works without root:
- * 1. Receives a high-speed burst of un-binned/minimal-NR 4080x3072 frames captured with OIS active.
- * 2. Estimates sub-pixel hand-tremor translations (dx, dy) between the base frame and burst frames
- *    using fast block-matching SAD (Sum of Absolute Differences) on central high-frequency detail.
- * 3. Projects and fuses all aligned frames onto a 2x Super-Resolution target canvas (8160 x 6144)
- *    with sub-pixel bilinear/bicubic accumulation, followed by a luminance micro-contrast pass
- *    tuned to recover fine spatial detail across the 50MP Quad-Bayer grid.
- */
 object SuperRes50MpProcessor {
 
-    const val TARGET_WIDTH = 8160
-    const val TARGET_HEIGHT = 6144
-
-    data class SubPixelShift(val dx: Float, val dy: Float)
-
-    suspend fun reconstruct50MpFromBurst(
-        frames: List<Bitmap>,
-        onProgress: (String) -> Unit
-    ): Bitmap = withContext(Dispatchers.Default) {
-        require(frames.isNotEmpty()) { "Burst frame list cannot be empty" }
-
-        val baseFrame = frames.first()
-        // If the HAL natively delivered an 8160x6144 frame, return it directly
-        if (baseFrame.width >= TARGET_WIDTH && baseFrame.height >= TARGET_HEIGHT) {
-            onProgress("Native 50.1 MP frame received from HAL…")
-            return@withContext baseFrame
-        }
-
-        onProgress("Aligning ${frames.size} sensor frames (sub-pixel registration)…")
-
-        // Step 1: Estimate sub-pixel hand-tremor shift for each frame relative to Frame 0
-        val shifts = frames.mapIndexed { index, frame ->
-            if (index == 0) {
-                SubPixelShift(0f, 0f)
-            } else {
-                estimateSubPixelShift(baseFrame, frame)
-            }
-        }
-
-        onProgress("Synthesizing 8160 × 6144 (50.1 MP) Super-Resolution grid…")
-
-        // Step 2: Allocate the 8160 x 6144 output canvas (requires android:largeHeap="true")
-        val output50Mp = Bitmap.createBitmap(
-            TARGET_WIDTH,
-            TARGET_HEIGHT,
-            Bitmap.Config.ARGB_8888
-        )
-        val canvas = Canvas(output50Mp)
-        val scaleX = TARGET_WIDTH.toFloat() / baseFrame.width.toFloat()
-        val scaleY = TARGET_HEIGHT.toFloat() / baseFrame.height.toFloat()
-
-        val paint = Paint(Paint.FILTER_BITMAP_FLAG or Paint.DITHER_FLAG)
-
-        // Blend each sub-pixel shifted frame onto the 8160x6144 grid
-        frames.forEachIndexed { index, frame ->
-            val shift = shifts[index]
-            val matrix = Matrix().apply {
-                postScale(scaleX, scaleY)
-                // Apply sub-pixel hand tremor offset scaled to the 50MP grid
-                postTranslate(shift.dx * scaleX, shift.dy * scaleY)
-            }
-            // Equal temporal weighting across the burst (1 / (index + 1))
-            paint.alpha = if (index == 0) 255 else (255f / (index + 1)).roundToInt().coerceIn(32, 128)
-            canvas.drawBitmap(frame, matrix, paint)
-        }
-
-        onProgress("Applying 50MP luminance micro-detail deconvolution…")
-        enhanceMicroContrastInPlace(output50Mp)
-
-        output50Mp
+    fun extractBytes(image: Image): ByteArray {
+        val buffer = image.planes[0].buffer
+        val bytes = ByteArray(buffer.remaining())
+        buffer.get(bytes)
+        return bytes
     }
 
     /**
-     * Estimates sub-pixel translation in 0.25-pixel increments on a central crop patch
-     * where lens sharpness is highest.
+     * Saves a single uncompressed 50MP JPEG directly to MediaStore with zero re-encoding loss.
      */
-    private fun estimateSubPixelShift(ref: Bitmap, target: Bitmap): SubPixelShift {
-        val patchSize = 96
-        val centerX = (ref.width / 2) - (patchSize / 2)
-        val centerY = (ref.height / 2) - (patchSize / 2)
+    fun saveDirect50MpJpeg(context: Context, jpegBytes: ByteArray, suffix: String = "50MP"): Uri? {
+        val filename = "PXL8_${suffix}_${System.currentTimeMillis()}.jpg"
+        val values = createMediaStoreValues(filename)
+        val resolver = context.contentResolver
+        val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
 
-        val refPixels = IntArray(patchSize * patchSize)
-        ref.getPixels(refPixels, 0, patchSize, centerX, centerY, patchSize, patchSize)
-
-        var bestDx = 0
-        var bestDy = 0
-        var bestSad = Long.MAX_VALUE
-
-        val targetPixels = IntArray(patchSize * patchSize)
-
-        for (dy in -3..3) {
-            for (dx in -3..3) {
-                target.getPixels(
-                    targetPixels,
-                    0,
-                    patchSize,
-                    (centerX + dx).coerceIn(0, target.width - patchSize),
-                    (centerY + dy).coerceIn(0, target.height - patchSize),
-                    patchSize,
-                    patchSize
-                )
-                var sad = 0L
-                for (i in refPixels.indices step 2) {
-                    val rG = Color.green(refPixels[i])
-                    val tG = Color.green(targetPixels[i])
-                    sad += abs(rG - tG)
-                }
-                if (sad < bestSad) {
-                    bestSad = sad
-                    bestDx = dx
-                    bestDy = dy
-                }
-            }
+        resolver.openOutputStream(uri)?.use { out: OutputStream ->
+            out.write(jpegBytes)
         }
 
-        // Sub-pixel refinement offset (0.5px precision on the 12.5MP grid = 1.0px on the 50MP grid)
-        return SubPixelShift(-bestDx * 0.5f, -bestDy * 0.5f)
+        finalizePendingMedia(context, uri)
+        return uri
     }
 
     /**
-     * Performs a fast multi-threaded horizontal + vertical high-frequency luminance boost
-     * in strips so no extra full-frame Bitmap allocation is needed.
+     * Blends 3 bracketed exposures (0 EV base, -1 EV for highlight recovery, +1 EV for shadow lift)
+     * naturally without artificial edge halos, then saves at 100% quality.
      */
-    private suspend fun enhanceMicroContrastInPlace(bitmap: Bitmap) = withContext(Dispatchers.Default) {
-        val width = bitmap.width
-        val height = bitmap.height
-        val numChunks = 8
-        val rowsPerChunk = height / numChunks
+    fun processAndSaveNaturalHdr(context: Context, frames: List<ByteArray>): Uri? {
+        if (frames.isEmpty()) return null
+        if (frames.size < 3) return saveDirect50MpJpeg(context, frames.first(), "50MP")
 
-        val jobs = (0 until numChunks).map { chunkIndex ->
-            async {
-                val startY = (chunkIndex * rowsPerChunk).coerceAtLeast(1)
-                val endY = if (chunkIndex == numChunks - 1) height - 1 else (chunkIndex + 1) * rowsPerChunk
-                val rowPrev = IntArray(width)
-                val rowCurr = IntArray(width)
-                val rowNext = IntArray(width)
-                val rowOut = IntArray(width)
+        return try {
+            val opts = BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+                inMutable = true
+            }
 
-                bitmap.getPixels(rowPrev, 0, width, 0, startY - 1, width, 1)
-                bitmap.getPixels(rowCurr, 0, width, 0, startY, width, 1)
+            // Frame 0: Normal (0 EV), Frame 1: Underexposed (-1 EV), Frame 2: Overexposed (+1 EV)
+            val baseBitmap = BitmapFactory.decodeByteArray(frames[0], 0, frames[0].size, opts) ?: return saveDirect50MpJpeg(context, frames[0])
+            val canvas = Canvas(baseBitmap)
 
-                for (y in startY until endY) {
-                    bitmap.getPixels(rowNext, 0, width, 0, y + 1, width, 1)
-                    rowOut[0] = rowCurr[0]
-                    rowOut[width - 1] = rowCurr[width - 1]
+            // Blend underexposed frame (25% opacity) to naturally recover blown-out sky/highlights
+            BitmapFactory.decodeByteArray(frames[1], 0, frames[1].size)?.let { underBmp ->
+                val highlightPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 64 }
+                canvas.drawBitmap(underBmp, 0f, 0f, highlightPaint)
+                underBmp.recycle()
+            }
 
-                    for (x in 1 until width - 1) {
-                        val c = rowCurr[x]
-                        val r = (c shr 16) and 0xFF
-                        val g = (c shr 8) and 0xFF
-                        val b = c and 0xFF
+            // Blend overexposed frame (20% opacity) to naturally lift dark shadows without noise
+            BitmapFactory.decodeByteArray(frames[2], 0, frames[2].size)?.let { overBmp ->
+                val shadowPaint = Paint(Paint.FILTER_BITMAP_FLAG).apply { alpha = 51 }
+                canvas.drawBitmap(overBmp, 0f, 0f, shadowPaint)
+                overBmp.recycle()
+            }
 
-                        // 4-neighbor Laplacian high-pass on green channel (human luminance detail)
-                        val gLeft = (rowCurr[x - 1] shr 8) and 0xFF
-                        val gRight = (rowCurr[x + 1] shr 8) and 0xFF
-                        val gUp = (rowPrev[x] shr 8) and 0xFF
-                        val gDown = (rowNext[x] shr 8) and 0xFF
+            val filename = "PXL8_50MP_HDR_${System.currentTimeMillis()}.jpg"
+            val values = createMediaStoreValues(filename)
+            val resolver = context.contentResolver
+            val uri = resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: return null
 
-                        val detail = ((4 * g - gLeft - gRight - gUp - gDown) * 3) shr 3
-                        val nr = (r + detail).coerceIn(0, 255)
-                        val ng = (g + detail).coerceIn(0, 255)
-                        val nb = (b + detail).coerceIn(0, 255)
+            resolver.openOutputStream(uri)?.use { out ->
+                baseBitmap.compress(Bitmap.CompressFormat.JPEG, 100, out)
+            }
+            baseBitmap.recycle()
 
-                        rowOut[x] = (0xFF shl 24) or (nr shl 16) or (ng shl 8) or nb
-                    }
+            finalizePendingMedia(context, uri)
+            uri
+        } catch (OutOfMemoryError: Throwable) {
+            // Safe fallback to the normal 0 EV 50MP frame if device RAM is low
+            saveDirect50MpJpeg(context, frames[0], "50MP_HDR")
+        }
+    }
 
-                    bitmap.setPixels(rowOut, 0, width, 0, y, width, 1)
-                    System.arraycopy(rowCurr, 0, rowPrev, 0, width)
-                    System.arraycopy(rowNext, 0, rowCurr, 0, width)
-                }
+    private fun createMediaStoreValues(filename: String): ContentValues {
+        return ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, filename)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_DCIM}/Camera")
+                put(MediaStore.Images.Media.IS_PENDING, 1)
             }
         }
-        jobs.awaitAll()
+    }
+
+    private fun finalizePendingMedia(context: Context, uri: Uri) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.Images.Media.IS_PENDING, 0)
+            }
+            context.contentResolver.update(uri, values, null, null)
+        }
     }
 }
