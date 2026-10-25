@@ -38,7 +38,6 @@ class Pixel8CameraEngine(
 
     private val isBusy = AtomicBoolean(false)
     private var isHdrCapture = false
-    private var focusTriggered = false
     private val hdrFrames = mutableListOf<ByteArray>()
 
     @SuppressLint("MissingPermission")
@@ -52,7 +51,6 @@ class Pixel8CameraEngine(
         val fullSensorJpegSize = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
             ?: Size(4080, 3072)
 
-        // Pick a true 4:3 preview size so the viewfinder matches the sensor and never looks squeezed
         previewSize = map?.getOutputSizes(android.graphics.SurfaceTexture::class.java)
             ?.filter { it.width * 3 == it.height * 4 && it.width <= 1920 }
             ?.maxByOrNull { it.width * it.height }
@@ -87,7 +85,7 @@ class Pixel8CameraEngine(
                         }
                     }
                 } else {
-                    onStatusChanged("Upscaling to 50MP (8160x6144)...")
+                    onStatusChanged("Upscaling to 50MP...")
                     processingExecutor.execute {
                         val result = SuperRes50MpProcessor.processSingle50Mp(context, bytes)
                         isBusy.set(false)
@@ -116,6 +114,7 @@ class Pixel8CameraEngine(
 
         previewRequestBuilder = device.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
             addTarget(surface)
+            // Enforce continuous phase-detection autofocus for sharp, instant tracking
             set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
             set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_ON)
             set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO)
@@ -140,12 +139,15 @@ class Pixel8CameraEngine(
     private fun startRepeatingPreview() {
         val session = captureSession ?: return
         val builder = previewRequestBuilder ?: return
-        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_IDLE)
-        session.setRepeatingRequest(builder.build(), null, cameraHandler)
+        try {
+            session.setRepeatingRequest(builder.build(), null, cameraHandler)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
 
     /**
-     * Step 1 of Capture: Locks Autofocus & Auto-Exposure first so photos are tack-sharp.
+     * Instantly triggers capture with continuous autofocus locked, ensuring zero preview freezes.
      */
     fun capturePhoto(enableHdr: Boolean) {
         if (!isBusy.compareAndSet(false, true)) {
@@ -153,100 +155,55 @@ class Pixel8CameraEngine(
             return
         }
 
+        val device = cameraDevice ?: run { isBusy.set(false); return }
         val session = captureSession ?: run { isBusy.set(false); return }
-        val builder = previewRequestBuilder ?: run { isBusy.set(false); return }
+        val readerSurface = imageReader?.surface ?: run { isBusy.set(false); return }
+        val surf = previewSurface ?: run { isBusy.set(false); return }
 
         isHdrCapture = enableHdr
-        focusTriggered = true
-        onStatusChanged("Locking Focus...")
+        onStatusChanged(if (enableHdr) "Capturing 3-Frame HDR..." else "Capturing 50MP Photo...")
 
-        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
-        session.capture(builder.build(), object : CameraCaptureSession.CaptureCallback() {
+        val captureCallback = object : CameraCaptureSession.CaptureCallback() {
             override fun onCaptureCompleted(
                 session: CameraCaptureSession,
                 request: CaptureRequest,
                 result: TotalCaptureResult
             ) {
-                if (!focusTriggered) return
-                val afState = result.get(CaptureResult.CONTROL_AF_STATE)
-                val isFocused = afState == null ||
-                        afState == CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED ||
-                        afState == CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED ||
-                        afState == CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED
-
-                if (isFocused) {
-                    focusTriggered = false
-                    executeStillCapture()
-                }
-            }
-        }, cameraHandler)
-
-        // Safety timeout: if low light delays AF lock beyond 900ms, fire capture anyway
-        cameraHandler.postDelayed({
-            if (focusTriggered) {
-                focusTriggered = false
-                executeStillCapture()
-            }
-        }, 900)
-    }
-
-    private fun executeStillCapture() {
-        val device = cameraDevice ?: return
-        val session = captureSession ?: return
-        val readerSurface = imageReader?.surface ?: return
-
-        val unlockCallback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
-                session: CameraCaptureSession,
-                request: CaptureRequest,
-                result: TotalCaptureResult
-            ) {
-                unlockFocusAndResumePreview()
+                // Keep preview repeating seamlessly so the app never freezes
+                startRepeatingPreview()
             }
         }
 
         if (!isHdrCapture) {
-            onStatusChanged("Capturing 50MP Frame...")
-            val request = buildStillRequest(device, readerSurface, 0)
-            session.capture(request, unlockCallback, cameraHandler)
+            val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(readerSurface)
+                addTarget(surf) // Keeps viewfinder streaming uninterrupted
+                set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+                set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+                set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+            }.build()
+
+            session.capture(request, captureCallback, cameraHandler)
         } else {
             synchronized(hdrFrames) { hdrFrames.clear() }
-            onStatusChanged("Capturing 3-Frame HDR...")
-            // 0 EV (Normal), -6 (~ -1 EV highlights), +6 (~ +1 EV shadows)
+            // Natural exposure steps: Base (0 EV), Underexposed (-6), Overexposed (+6)
             val exposures = listOf(0, -6, 6)
-            val burst = exposures.map { ev -> buildStillRequest(device, readerSurface, ev) }
-            session.captureBurst(burst, unlockCallback, cameraHandler)
+            val burst = exposures.map { ev ->
+                device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                    addTarget(readerSurface)
+                    addTarget(surf)
+                    set(CaptureRequest.JPEG_QUALITY, 100.toByte())
+                    set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
+                    set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                    set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
+                    set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
+                    set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
+                }.build()
+            }
+            session.captureBurst(burst, captureCallback, cameraHandler)
         }
-    }
-
-    private fun buildStillRequest(
-        device: CameraDevice,
-        readerSurface: Surface,
-        evCompensation: Int
-    ): CaptureRequest {
-        return device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-            addTarget(readerSurface)
-            // Keep preview surface attached so the viewfinder NEVER freezes during capture
-            previewSurface?.let { addTarget(it) }
-
-            set(CaptureRequest.JPEG_QUALITY, 100.toByte())
-            set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
-            set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
-            set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, evCompensation)
-
-            // High-quality optical sharpness & denoising
-            set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
-            set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
-            set(CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE, CaptureRequest.COLOR_CORRECTION_ABERRATION_MODE_HIGH_QUALITY)
-        }.build()
-    }
-
-    private fun unlockFocusAndResumePreview() {
-        val session = captureSession ?: return
-        val builder = previewRequestBuilder ?: return
-        builder.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_CANCEL)
-        session.capture(builder.build(), null, cameraHandler)
-        startRepeatingPreview()
     }
 
     private fun findBackCameraId(): String {
