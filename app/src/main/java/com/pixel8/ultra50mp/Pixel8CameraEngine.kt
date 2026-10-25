@@ -149,17 +149,19 @@ class Pixel8CameraEngine(
         val device = cameraDevice ?: run { isBusy.set(false); return }
         val session = captureSession ?: run { isBusy.set(false); return }
         val readerSurface = imageReader?.surface ?: run { isBusy.set(false); return }
-        val surf = activeSurface ?: run { isBusy.set(false); return }
 
         isHdrCapture = enableHdr
         onStatusChanged(if (enableHdr) "Capturing 3-Frame HDR..." else "Capturing 50MP Photo...")
 
+        // Instantly resume preview repeating right after the hardware triggers capture so viewfinder doesn't lock
         val captureCallback = object : CameraCaptureSession.CaptureCallback() {
-            override fun onCaptureCompleted(
+            override fun onCaptureStarted(
                 session: CameraCaptureSession,
                 request: CaptureRequest,
-                result: TotalCaptureResult
+                timestamp: Long,
+                frameNumber: Long
             ) {
+                // Instantly resume viewfinder preview stream while photo saves in background
                 startRepeatingPreview()
             }
         }
@@ -167,7 +169,6 @@ class Pixel8CameraEngine(
         if (!isHdrCapture) {
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(readerSurface)
-                addTarget(surf)
                 set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
@@ -181,7 +182,6 @@ class Pixel8CameraEngine(
             val burst = exposures.map { ev ->
                 device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(readerSurface)
-                    addTarget(surf)
                     set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                     set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
