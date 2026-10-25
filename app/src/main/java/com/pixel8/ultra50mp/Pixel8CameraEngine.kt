@@ -35,7 +35,7 @@ class Pixel8CameraEngine(
 
     private val isBusy = AtomicBoolean(false)
     private var isHdrCapture = false
-    private val hdrFrames = mutableListOf<SuperRes50MpProcessor.YuvData>()
+    private val hdrFrames = mutableListOf<ByteArray>()
 
     @SuppressLint("MissingPermission")
     fun startCamera(surface: Surface) {
@@ -45,32 +45,30 @@ class Pixel8CameraEngine(
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        val maxResolution = map?.getOutputSizes(ImageFormat.YUV_420_888)?.maxByOrNull { it.width * it.height }
+        val maxResolution = map?.getOutputSizes(ImageFormat.JPEG)?.maxByOrNull { it.width * it.height }
             ?: Size(4080, 3072)
 
         imageReader = ImageReader.newInstance(
             maxResolution.width,
             maxResolution.height,
-            ImageFormat.YUV_420_888,
+            ImageFormat.JPEG,
             4
         ).apply {
             setOnImageAvailableListener({ reader ->
                 val image = reader.acquireNextImage() ?: return@setOnImageAvailableListener
-                val yuvBytes = SuperRes50MpProcessor.extractYuvBytes(image)
-                val width = image.width
-                val height = image.height
+                val bytes = SuperRes50MpProcessor.extractBytes(image)
                 image.close()
 
                 if (isHdrCapture) {
                     synchronized(hdrFrames) {
-                        hdrFrames.add(yuvBytes)
+                        hdrFrames.add(bytes)
                         if (hdrFrames.size == 3) {
                             val capturedList = hdrFrames.toList()
                             hdrFrames.clear()
                             isHdrCapture = false
                             onStatusChanged("Processing 50MP Natural HDR...")
                             processingExecutor.execute {
-                                val result = SuperRes50MpProcessor.processYuvHdr50Mp(context, capturedList, width, height)
+                                val result = SuperRes50MpProcessor.processNaturalHdr50Mp(context, capturedList)
                                 isBusy.set(false)
                                 if (result != null) onPhotoReady(result.uri, result.thumbnail)
                                 onStatusChanged("50MP (8160x6144) • READY")
@@ -80,7 +78,7 @@ class Pixel8CameraEngine(
                 } else {
                     onStatusChanged("Processing 50MP Detail...")
                     processingExecutor.execute {
-                        val result = SuperRes50MpProcessor.processYuvSingle50Mp(context, yuvBytes, width, height)
+                        val result = SuperRes50MpProcessor.processSingle50Mp(context, bytes)
                         isBusy.set(false)
                         if (result != null) onPhotoReady(result.uri, result.thumbnail)
                         onStatusChanged("50MP (8160x6144) • READY")
@@ -170,6 +168,7 @@ class Pixel8CameraEngine(
             val request = device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(readerSurface)
                 addTarget(surf)
+                set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                 set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                 set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                 set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
@@ -183,6 +182,7 @@ class Pixel8CameraEngine(
                 device.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                     addTarget(readerSurface)
                     addTarget(surf)
+                    set(CaptureRequest.JPEG_QUALITY, 100.toByte())
                     set(CaptureRequest.JPEG_ORIENTATION, sensorOrientation)
                     set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                     set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev)
