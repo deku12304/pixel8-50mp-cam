@@ -35,7 +35,7 @@ class Pixel8CameraEngine(
 
     private val isBusy = AtomicBoolean(false)
     private var isHdrCapture = false
-    private val hdrFrames = mutableListOf<ByteArray>()
+    private val hdrFrames = mutableListOf<SuperRes50MpProcessor.YuvData>()
 
     @SuppressLint("MissingPermission")
     fun startCamera(surface: Surface) {
@@ -45,7 +45,6 @@ class Pixel8CameraEngine(
         sensorOrientation = characteristics.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90
 
         val map = characteristics.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)
-        // Use YUV_420_888 for high-detail uncompressed sensor data extraction
         val maxResolution = map?.getOutputSizes(ImageFormat.YUV_420_888)?.maxByOrNull { it.width * it.height }
             ?: Size(4080, 3072)
 
@@ -68,6 +67,7 @@ class Pixel8CameraEngine(
                         if (hdrFrames.size == 3) {
                             val capturedList = hdrFrames.toList()
                             hdrFrames.clear()
+                            isHdrCapture = false
                             onStatusChanged("Processing 50MP Natural HDR...")
                             processingExecutor.execute {
                                 val result = SuperRes50MpProcessor.processYuvHdr50Mp(context, capturedList, width, height)
