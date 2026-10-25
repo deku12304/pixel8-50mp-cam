@@ -246,7 +246,7 @@ class Pixel8CameraEngine(private val context: Context) {
                 if (modeInfo.native50MpUnlocked) {
                     set(
                         CaptureRequest.SENSOR_PIXEL_MODE,
-                        CaptureMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION
+                        CameraMetadata.SENSOR_PIXEL_MODE_MAXIMUM_RESOLUTION
                     )
                 }
             }.build()
