@@ -130,7 +130,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         rotationSensor?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
         }
-        // Instantly restart camera preview when returning from Google Photos
         setupViewFinder()
     }
 
